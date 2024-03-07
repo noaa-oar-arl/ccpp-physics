@@ -7963,7 +7963,7 @@ cjfe
             else
               call fixrdc_tile(fnlaic, tile_num_ch, i_index, j_index,
      &                         kpdlai, lai(:,nn), mon, len, me)
-             print '(A,F10.1)','lai=',lai(1,12)
+             !print '(A,F10.1)','lai=',lai(1,12)
             endif
             if (me .eq. 0) write(6,*) 'leaf area index',
      &                                ' cover read in for mon=',mon
