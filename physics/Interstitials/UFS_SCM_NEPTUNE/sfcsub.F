@@ -353,8 +353,8 @@
       parameter(veglmx=1.0,veglmn=0.0,vegomx=0.0,vegomn=0.0,
      &          vegsmx=1.0,vegsmn=0.0,vegimx=0.0,vegimn=0.0,
      &          vegjmx=0.0,vegjmn=0.0)
-      parameter(lailmx=1.0,lailmn=0.0,laiomx=0.0,laiomn=0.0,   ! fix these values
-     &          laismx=1.0,laismn=0.0,laiimx=0.0,laiimn=0.0,
+      parameter(lailmx=10.0,lailmn=0.0,laiomx=10.0,laiomn=0.0,   ! fix these values
+     &          laismx=10.0,laismn=0.0,laiimx=10.0,laiimn=0.0,
      &          laijmx=0.0,laijmn=0.0)
       parameter(vmnlmx=1.0,vmnlmn=0.0,vmnomx=0.0,vmnomn=0.0,
      &          vmnsmx=1.0,vmnsmn=0.0,vmnimx=0.0,vmnimn=0.0,
