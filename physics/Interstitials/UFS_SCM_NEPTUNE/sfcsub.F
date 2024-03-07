@@ -7953,7 +7953,7 @@ cjfe
 !
 !  leaf area index
 !
-          if(fnlaic(1:8).ne.'        ') then
+          if (fnlaic(1:8).ne.'        ') then
             if ( index(fnlaic, "tileX.nc") == 0) then ! grib file
               kpd7=-1
               call fixrdc(lugb,fnlaic,kpdlai,kpd7,mon,slmskl,
@@ -8512,7 +8512,7 @@ cjfe
         case(87)
           error=nf90_inq_varid(ncid, 'vegetation_greenness', id_var)
         case(181)
-          error=nf90_inq_varid(ncid, 'vegetation_greenness', id_var) !TOFIX 
+          error=nf90_inq_varid(ncid, 'leaf_area_index', id_var)  
         case(159)
           error=nf90_inq_varid(ncid, 'maximum_snow_albedo', id_var)
         case(189)
