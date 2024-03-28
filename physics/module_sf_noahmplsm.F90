@@ -4415,7 +4415,6 @@ endif   ! croptype == 0
      ch = cah
      chleaf = cvh
      chuc = (1./rahg)
-!     chuc = (1./rahg)*0.50 ! Test of reducing in-canopy exchange coefficient by 50% PCC.
 
   end subroutine vege_flux
 
