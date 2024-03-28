@@ -4414,7 +4414,7 @@ endif   ! croptype == 0
 ! update ch for output
      ch = cah
      chleaf = cvh
-     chuc = (1./rahg)
+     chuc = 1./rahg
 
   end subroutine vege_flux
 
