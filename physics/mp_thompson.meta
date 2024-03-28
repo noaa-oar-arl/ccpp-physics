@@ -610,9 +610,9 @@
   type = real
   kind = kind_phys
   intent = out
-[reset_dBZ]
-  standard_name = flag_for_resetting_radar_reflectivity_calculation
-  long_name = flag for resetting radar reflectivity calculation
+[fullradar_diag]
+  standard_name = do_full_radar_reflectivity
+  long_name = flag for computing full radar reflectivity
   units = flag
   dimensions = ()
   type = logical
@@ -725,7 +725,7 @@
   units = none
   dimensions = (number_of_perturbed_spp_schemes)
   type = character
-  kind = len=3
+  kind = len=10
   intent = in
 [cplchm]
   standard_name = flag_for_chemistry_coupling

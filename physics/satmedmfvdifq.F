@@ -7,6 +7,9 @@
       use mfpbltq_mod
       use tridi_mod
       use mfscuq_mod
+      !PCC_CANOPY
+      use canopy_utils_mod
+
       contains
 
 !> \defgroup module_satmedmfvdifq GFS TKE-EDMF PBL Module
@@ -22,7 +25,7 @@
 !! and to reduce the negative wind speed bias in upper troposphere
 !!
 !! Incorporate the LES-based changes for TC simulation
-!! (Chen et al.,2022, https://doi.org/10.1175/WAF-D-21-0168.1)
+!! (Chen et al.,2022 \cite Chen_2022)
 !! with additional improvements on MF working with Cu schemes
 !! Xiaomin Chen, 5/2/2022
 !!
@@ -73,18 +76,29 @@
 !! -# A mass-flux approach is also used to represent the stratocumulus-top-induced turbulence
 !! (mfscuq.f).
 !! \section detail_satmedmfvidfq GFS satmedmfvdifq Detailed Algorithm 
-      subroutine satmedmfvdifq_run(im,km,progsigma,ntrac,ntcw,ntrw,     &
+      subroutine satmedmfvdifq_run(im,km,ntrac,ntcw,ntrw,               &
      &     ntiw,ntke,grav,rd,cp,rv,hvap,hfus,fv,eps,epsm1,              &
-     &     dv,du,tdt,rtg,tmf,u1,v1,t1,q1,swh,hlw,xmu,garea,zvfun,       &
+     &     dv,du,tdt,rtg,u1,v1,t1,q1,swh,hlw,xmu,                       &
+     &     garea,zvfun,sigmaf,                                          &
      &     psk,rbsoil,zorl,u10m,v10m,fm,fh,                             &
      &     tsea,heat,evap,stress,spd1,kpbl,                             &
      &     prsi,del,prsl,prslk,phii,phil,delt,                          &
      &     dspheat,dusfc,dvsfc,dtsfc,dqsfc,hpbl,dkt,dku,                &
      &     kinver,xkzm_m,xkzm_h,xkzm_s,dspfac,bl_upfr,bl_dnfr,          &
      &     rlmx,elmx,sfc_rlm,tc_pbl,                                    &
+     &     do_canopy, vegtype, lai,                                     &
+!IVAI: canopy inputs
+     &     claie, cfch, cfrt, cclu, cpopu,
+!IVAI
+!TODO -Canopy Inputs
+!     &     rdcanopylai, rdcanopyfch, rdcanopyfrt, rdcanopyclu,        &
+!     &     canopylaixy, canopyfchxy, canopyfrtxy, canopycluxy,        & 
      &     ntqv,dtend,dtidx,index_of_temperature,index_of_x_wind,       &
      &     index_of_y_wind,index_of_process_pbl,gen_tend,ldiag3d,       &
-     &     errmsg,errflg)
+     &     errmsg,errflg,                                               &
+!IVAI: aux arrays
+     &     naux2d,naux3d,aux2d,aux3d)
+
 !
       use machine  , only : kind_phys
       use funcphys , only : fpvs
@@ -98,21 +112,36 @@
       integer, intent(in)  :: tc_pbl
       integer, intent(in)  :: kinver(:)
       integer, intent(out) :: kpbl(:)
-      logical, intent(in)  :: gen_tend,ldiag3d,progsigma
+      logical, intent(in)  :: gen_tend,ldiag3d
 !
       real(kind=kind_phys), intent(in) :: grav,rd,cp,rv,hvap,hfus,fv,   &
      &                                    eps,epsm1
       real(kind=kind_phys), intent(in) :: delt, xkzm_m, xkzm_h, xkzm_s
       real(kind=kind_phys), intent(in) :: dspfac, bl_upfr, bl_dnfr
       real(kind=kind_phys), intent(in) :: rlmx, elmx
+      !PCC_CANOPY------------------------------------
+      logical, intent(in)  :: do_canopy
+      integer, intent(in)  :: vegtype(:)
+      real(kind=kind_phys), intent(in) :: lai(:)
+!IVAI: canopy inputs
+      real(kind=kind_phys), intent(in)  :: claie(:), cfch(:), cfrt(:),
+     &                                     cclu(:), cpopu(:)
+!TODO Canopy Inputs
+!      logical, intent(in)  :: rdcanopylai, rdcanopyfch, rdcanopyfrt,  &
+!                              rdcanopyclu
+!      real(kind=kind_phys), intent(in) :: canopylaixy(:),               &
+!                                          canopyfchxy(:),               &
+!                                          canopyfrtxy(:),             &
+!                                          canopycluxy(:)
+      !----------------------------------------------
       real(kind=kind_phys), intent(inout) :: dv(:,:),     du(:,:),      &
-     &                     tdt(:,:),    rtg(:,:,:), tmf(:,:)
+     &                     tdt(:,:),    rtg(:,:,:)
       real(kind=kind_phys), intent(in) ::                               &
      &                     u1(:,:),     v1(:,:),                        &
      &                     t1(:,:),     q1(:,:,:),                      &
      &                     swh(:,:),    hlw(:,:),                       &
      &                     xmu(:),       garea(:),                      &
-     &                     zvfun(:),                                    &
+     &                     zvfun(:),     sigmaf(:),                     &
      &                     psk(:),       rbsoil(:),                     &
      &                     zorl(:),      tsea(:),                       &
      &                     u10m(:),      v10m(:),                       &
@@ -147,7 +176,7 @@
       integer lcld(im),kcld(im),krad(im),mrad(im)
       integer kx1(im), kb1(im), kpblx(im)
 !
-      real(kind=kind_phys) tke(im,km),  tkeh(im,km-1)
+      real(kind=kind_phys) tke(im,km), tkeh(im,km-1), e2(im,0:km)
 !
       real(kind=kind_phys) theta(im,km),thvx(im,km),  thlvx(im,km),
      &                     qlx(im,km),  thetae(im,km),thlx(im,km),
@@ -159,15 +188,16 @@
      &                     qstl(im,km)
 !
       real(kind=kind_phys) dtdz1(im), gdx(im),
-     &                     phih(im),  phim(im),    prn(im,km-1),
+     &                     phih(im),  phim(im),
+     &                     phims(im), prn(im,km-1),
      &                     rbdn(im),  rbup(im),    thermal(im),
      &                     ustar(im), wstar(im),   hpblx(im),
      &                     ust3(im),  wst3(im),    rho_a(im),
-     &                     z0(im),    crb(im),
+     &                     z0(im),    crb(im),     tkemean(im),
      &                     hgamt(im), hgamq(im),
      &                     wscale(im),vpert(im),
      &                     zol(im),   sflux(im),
-     &                     tx1(im),   tx2(im)
+     &                     sumx(im),  tx1(im),     tx2(im)
 !
       real(kind=kind_phys) radmin(im)
 !
@@ -181,7 +211,7 @@
       real(kind=kind_phys) elm(im,km),   ele(im,km),
      &                     ckz(im,km),   chz(im,km),
      &                     diss(im,km-1),prod(im,km-1), 
-     &                     bf(im,km-1),  shr2(im,km-1),
+     &                     bf(im,km-1),  shr2(im,km-1), wush(im,km),
      &                     xlamue(im,km-1), xlamde(im,km-1),
      &                     gotvx(im,km), rlam(im,km-1)
 !
@@ -205,7 +235,7 @@
      &                     q_diff(im,0:km-1,ntrac-1)
       real(kind=kind_phys) rrkp, phkp
       real(kind=kind_phys) tsumn(im), tsump(im), rtnp(im)
-      real(kind=kind_phys) sfcpbl(im)
+      real(kind=kind_phys) sfcpbl(im), vez0fun(im)
 !
       logical  pblflg(im), sfcflg(im), flg(im)
       logical  scuflg(im), pcnvflg(im)
@@ -238,19 +268,60 @@
      &                     zfac,    zfmin,  vk,     spdk2,
      &                     tkmin,   tkbmx,  xkgdx,
      &                     xkinv1,  xkinv2,
-     &                     zlup,    zldn,   bsum,   cs0,
+     &                     zlup,    zldn,   cs0,    csmf,
      &                     tem,     tem1,   tem2,   tem3,
      &                     ptem,    ptem0,  ptem1,  ptem2
 !
       real(kind=kind_phys) slfac
 !
+      real(kind=kind_phys) vegflo, vegfup, z0lo, z0up, vc0, zc0
+!
       real(kind=kind_phys) ck0, ck1, ch0, ch1, ce0, rchck
 !
+!PCC_CANOPY------------------------------------
+      real(kind=kind_phys) PICAN
+!----------------------------------------------
+
       real(kind=kind_phys) qlcr, zstblmax, hcrinv
 !
       real(kind=kind_phys) h1
 
       real(kind=kind_phys) bfac, mffac
+
+!PCC_CANOPY------------------------------------
+      integer COUNTCAN,KCAN
+      integer kount         !IVAI
+      real(kind=kind_phys) FCH,       MOL,   HOL, TLCAN,
+     &                     SIGMACAN,  RRCAN, BBCAN,
+     &                     AACAN,     ZCAN,  ZFL, BOTCAN,
+     &                     EDDYVEST1, EDDYVEST_INT
+!TODO Canopy Inputs
+!     &                     XCANOPYLAI, XCANOPYFCH,
+!     &                     XCANOPYFRT, XCANOPYCLU
+
+      ! in canopy eddy diffusivity [ m**2/s ]
+      real(kind=kind_phys), allocatable  :: EDDYVESTX ( : )
+      ! in canopy layer [m]
+      real(kind=kind_phys), allocatable  :: ZCANX     ( : )
+      ! Declare local maximum canopy layers
+      integer, parameter :: MAXCAN = 1000
+      integer, parameter :: mvt   = 30 ! use 30 instead of 27
+      !Based on MODIS IGBP 20 Category Dataset
+      real :: fch_table(mvt)         !< top of canopy (m)
+       data   ( fch_table(i),i=1,mvt)   /
+     &          20.0, 20.0, 18.0, 16.0, 16.0, 1.10,
+     &          1.10, 13.0, 10.0, 1.00, 5.00, 2.00,
+     &          15.0, 1.50, 0.00, 0.00, 0.00, 4.00,
+     &          2.00, 0.50, 0.00, 0.00, 0.00, 0.00,
+     &          0.00, 0.00, 0.00, 0.00, 0.00, 0.00 /
+!----------------------------------------------
+
+!IVAI
+      integer, intent(in) :: naux2d,naux3d
+      real(kind_phys), intent(inout) :: aux2d(:,:)
+      real(kind_phys), intent(inout) :: aux3d(:,:,:)
+!IVAI
+
 !!
       parameter(bfac=100.)
       parameter(wfac=7.0,cfac=4.5)
@@ -269,9 +340,23 @@
       parameter(qlcr=3.5e-5,zstblmax=2500.)
       parameter(xkinv1=0.15,xkinv2=0.3)
       parameter(h1=0.33333333,hcrinv=250.)
+      parameter(vegflo=0.1,vegfup=1.0,z0lo=0.1,z0up=1.0)
+      parameter(vc0=1.0,zc0=1.0)
       parameter(ck1=0.15,ch1=0.15)
-      parameter(cs0=0.2)
+      parameter(cs0=0.4,csmf=0.5)
       parameter(rchck=1.5,ndt=20)
+!PCC_CANOPY------------------------------------
+      parameter (PICAN = 3.1415927)
+!----------------------------------------------
+
+!PCC_CANOPY------------------------------------
+      if (do_canopy) then
+        if(.not.allocated(EDDYVESTX))
+     &    allocate( EDDYVESTX    ( MAXCAN ) )
+        if(.not.allocated(ZCANX))
+     &    allocate( ZCANX    ( MAXCAN ) )
+      endif
+!----------------------------------------------
 
       if (tc_pbl == 0) then
         ck0 = 0.4
@@ -318,6 +403,7 @@
           xmfd(i,k) = 0.
           buou(i,k) = 0.
           buod(i,k) = 0.
+          wush(i,k) = 0.
           ckz(i,k) = ck1
           chz(i,k) = ch1
           rlmnz(i,k) = rlmn0
@@ -331,14 +417,6 @@
           zm(i,k) = zi(i,k+1)
         enddo
       enddo
-!>  - Initialize variables needed for prognostic cumulus closure
-      if(progsigma)then
-         do k=1,km
-            do i=1,im
-               tmf(i,k) = 0.
-            enddo
-         enddo
-      endif
 !>  - Compute horizontal grid size (\p gdx)
       do i=1,im
         gdx(i) = sqrt(garea(i))
@@ -443,7 +521,20 @@
            kcld(i)  = km1
          endif
       enddo
-
+!           
+!>  - Compute a function for green vegetation fraction and surface roughness.
+!! Entrainment rate in updraft is a function of vegetation fraction and surface
+!! roughness length
+!       
+      do i = 1,im
+        tem = (sigmaf(i) - vegflo) / (vegfup - vegflo)
+        tem = min(max(tem, 0.), 1.)
+        tem1 = sqrt(tem)
+        ptem = (z0(i) - z0lo) / (z0up - z0lo)
+        ptem = min(max(ptem, 0.), 1.)
+        vez0fun(i) = (1. + vc0 * tem1) * (1. + zc0 * ptem)
+      enddo
+!
 !>  - Compute \f$\theta\f$(theta), and \f$q_l\f$(qlx), \f$\theta_e\f$(thetae),
 !! \f$\theta_v\f$(thvx),\f$\theta_{l,v}\f$ (thlvx) including ice water 
       do k=1,km
@@ -469,7 +560,8 @@
           svx(i,k)   = cp * tvx(i,k)
           ptem1      = elocp * pix(i,k) * max(q1(i,k,1),qmin)
           thetae(i,k)= theta(i,k) +  ptem1
-          gotvx(i,k) = g / tvx(i,k)
+!         gotvx(i,k) = g / tvx(i,k)
+          gotvx(i,k) = g / thvx(i,k)
         enddo
       enddo
 
@@ -734,6 +826,40 @@
         endif
       enddo
 !
+!>  - Compute mean tke within pbl
+!
+      do i = 1, im
+        sumx(i) = 0.
+        tkemean(i) = 0.
+      enddo
+      do k = 1, kmpbl
+      do i = 1, im
+        if(k < kpbl(i)) then
+          dz = zi(i,k+1) - zi(i,k)
+          tkemean(i) = tkemean(i) + tke(i,k) * dz
+          sumx(i) = sumx(i) + dz
+        endif
+      enddo
+      enddo
+      do i = 1, im
+        if(tkemean(i) > 0. .and. sumx(i) > 0.) then
+          tkemean(i) = tkemean(i) / sumx(i)
+        endif
+      enddo
+!
+!>  - Compute wind shear term as a sink term for updraft and downdraft
+!!  velocity
+!
+      kps = max(kmpbl, kmscu)
+      do k = 2, kps
+      do i = 1, im
+        dz = zi(i,k+1) - zi(i,k)
+        tem = (0.5*(u1(i,k-1)-u1(i,k+1))/dz)**2
+        tem1 = tem+(0.5*(v1(i,k-1)-v1(i,k+1))/dz)**2
+        wush(i,k) = csmf * sqrt(tem1)
+      enddo
+      enddo
+!
 !> ## Compute Monin-Obukhov similarity parameters
 !!  - Calculate the Monin-Obukhov nondimensional stability paramter, commonly
 !!    referred to as \f$\zeta\f$ using the following equation from Businger et al.(1971) \cite businger_et_al_1971
@@ -766,9 +892,12 @@
            tem     = 1.0 / (1. - aphi16*zol1)
            phih(i) = sqrt(tem)
            phim(i) = sqrt(phih(i))
+           tem1    = 1.0 / (1. - aphi16*zol(i))
+           phims(i) = sqrt(sqrt(tem1))
          else
            phim(i) = 1. + aphi5*zol1
            phih(i) = phim(i)
+           phims(i) = 1. + aphi5*zol(i)
          endif
       enddo
 !
@@ -960,14 +1089,14 @@
 !!    to take into account nonlocal transport by large eddies. For details of the mfpbltq subroutine, step into its documentation ::mfpbltq
       call mfpbltq(im,im,km,kmpbl,ntcw,ntrac1,dt2,
      &    pcnvflg,zl,zm,q1,t1,u1,v1,plyr,pix,thlx,thvx,
-     &    gdx,hpbl,kpbl,vpert,buou,xmf,
+     &    gdx,hpbl,kpbl,vpert,buou,wush,tkemean,vez0fun,xmf,
      &    tcko,qcko,ucko,vcko,xlamue,bl_upfr)
 !>  - Call mfscuq(), which is a new mass-flux parameterization for 
 !!    stratocumulus-top-induced turbulence mixing. For details of the mfscuq subroutine, step into its documentation ::mfscuq
       call mfscuq(im,im,km,kmscu,ntcw,ntrac1,dt2,
      &    scuflg,zl,zm,q1,t1,u1,v1,plyr,pix,
      &    thlx,thvx,thlvx,gdx,thetae,
-     &    krad,mrad,radmin,buod,xmfd,
+     &    krad,mrad,radmin,buod,wush,tkemean,vez0fun,xmfd,
      &    tcdo,qcdo,ucdo,vcdo,xlamde,bl_dnfr)
 
       if (tc_pbl == 1) then
@@ -1063,79 +1192,44 @@
       do k = 1, km1
         do i = 1, im
           zlup = 0.0
-          bsum = 0.0
           mlenflg = .true.
+          e2(i,k) = max(2.*tke(i,k), 0.001)
           do n = k, km1
             if(mlenflg) then
               dz = zl(i,n+1) - zl(i,n)
-!             tem1 = 0.5 * (thvx(i,n) + thvx(i,n+1))
-!!            tem1 = 0.5 * (thlvx(i,n) + thlvx(i,n+1))
-              tem3=((u1(i,n+1)-u1(i,n))/dz)**2
-              tem3=tem3+((v1(i,n+1)-v1(i,n))/dz)**2
-              tem3=cs0*sqrt(tem3)*sqrt(tke(i,k))
-              if (tc_pbl == 0) then
-                ptem = (gotvx(i,n)*(thvx(i,n+1)-thvx(i,k))+tem3)*dz
-!               ptem = (gotvx(i,n)*(thlvx(i,n+1)-thlvx(i,k)+tem3)*dz
-!               ptem = (gotvx(i,n)*(tem1-thvx(i,k))+tem3)*dz
-!!              ptem = (gotvx(i,n)*(tem1-thlvx(i,k)+tem3)*dz
-              else if (tc_pbl == 1) then
-                tem1 = 0.5*(thvx(i,n+1)+thvx(i,n))
-                ptem = (gotvx(i,n)*(tem1-thvx(i,k))+tem3)*dz
-              endif
-              bsum = bsum + ptem
+              tem1 = 2.*gotvx(i,n+1)*(thvx(i,k)-thvx(i,n+1))
+              tem2 = cs0*sqrt(e2(i,n))*sqrt(shr2(i,n))
+              e2(i,n+1) = e2(i,n) + (tem1 - tem2) * dz
               zlup = zlup + dz
-              if(bsum >= tke(i,k)) then
-                if(ptem >= 0.) then
-                  tem2 = max(ptem, zfmin)
-                else
-                  tem2 = min(ptem, -zfmin)
-                endif
-                ptem1 = (bsum - tke(i,k)) / tem2
-                zlup = zlup - ptem1 * dz 
+              if(e2(i,n+1) < 0.) then
+                ptem = e2(i,n+1) / (e2(i,n+1) - e2(i,n))
+                zlup = zlup - ptem * dz
                 zlup = max(zlup, 0.)
                 mlenflg = .false.
               endif
             endif
           enddo
           zldn = 0.0
-          bsum = 0.0
           mlenflg = .true.
           do n = k, 1, -1
             if(mlenflg) then
               if(n == 1) then
                 dz = zl(i,1)
-                tem1 = tsea(i)*(1.+fv*max(q1(i,1,1),qmin))
-!               tem1 = 0.5 * (tem1 + thvx(i,n))
-!!              tem1 = 0.5 * (tem1 + thlvx(i,n))
-                tem3 = (u1(i,1)/dz)**2
-                tem3 = tem3+(v1(i,1)/dz)**2
-                tem3 = cs0*sqrt(tem3)*sqrt(tke(i,1))
+                tem = tsea(i)*(1.+fv*max(q1(i,1,1),qmin))
+                tem1 = 2.*gotvx(i,n)*(tem-thvx(i,k))
+                tem2 = ustar(i)*phims(i)/(vk*dz)
+                tem2 = cs0*sqrt(e2(i,n))*tem2
+                e2(i,n-1) = e2(i,n) + (tem1 - tem2) * dz
               else
                 dz = zl(i,n) - zl(i,n-1)
-                if (tc_pbl == 0) then
-                 tem1 = thvx(i,n-1)
-!                tem1 = thlvx(i,n-1)
-!                tem1 = 0.5 * (thvx(i,n-1) + thvx(i,n))
-!!               tem1 = 0.5 * (thlvx(i,n-1) + thlvx(i,n))
-                else if (tc_pbl == 1) then
-                  tem1 = 0.5*(thvx(i,n)+thvx(i,n-1))
-                endif
-                tem3 = ((u1(i,n)-u1(i,n-1))/dz)**2
-                tem3 = tem3+((v1(i,n)-v1(i,n-1))/dz)**2
-                tem3 = cs0*sqrt(tem3)*sqrt(tke(i,k))
+                tem1 = 2.*gotvx(i,n-1)*(thvx(i,n-1)-thvx(i,k))
+                tem2 = cs0*sqrt(e2(i,n))*sqrt(shr2(i,n-1))
+                e2(i,n-1) = e2(i,n) + (tem1 - tem2) * dz
               endif
-              ptem = (gotvx(i,n)*(thvx(i,k)-tem1)+tem3)*dz
-!             ptem = (gotvx(i,n)*(thlvx(i,k)-tem1)+tem3)*dz
-              bsum = bsum + ptem
               zldn = zldn + dz
-              if(bsum >= tke(i,k)) then
-                if(ptem >= 0.) then
-                  tem2 = max(ptem, zfmin)
-                else
-                  tem2 = min(ptem, -zfmin)
-                endif
-                ptem1 = (bsum - tke(i,k)) / tem2
-                zldn = zldn - ptem1 * dz 
+              if(e2(i,n-1) < 0.) then
+                ptem = e2(i,n-1) / (e2(i,n-1) - e2(i,n))
+                zldn = zldn - ptem * dz
                 zldn = max(zldn, 0.)
                 mlenflg = .false.
               endif
@@ -1200,6 +1294,9 @@
             elm(i,k) = sqrt( 1.0/( 1.0/(zk**2)+1.0/(rlam(i,k)**2) ) )
           endif
 
+!
+          if(k == 1) elm(i,k)=zk
+!
           dz = zi(i,k+1) - zi(i,k)
           tem = max(gdx(i),dz)
           elm(i,k) = min(elm(i,k), tem)
@@ -1271,6 +1368,203 @@
 !
         enddo
       enddo
+      !PCC_CANOPY------------------------------------
+      kount=0 !IVAI
+      if (do_canopy) then 
+
+!IVAI
+!        print*, 'SATMEDMFVDIFQ_RUN: CLAIE = ', claie(:)
+!        print*, 'SATMEDMFVDIFQ_RUN: CFCH = ' , cfch (:)
+!        print*, 'SATMEDMFVDIFQ_RUN: CFRT = ' , cfrt (:)
+!        print*, 'SATMEDMFVDIFQ_RUN: CCLU = ' , cclu (:)
+!        print*, 'SATMEDMFVDIFQ_RUN: CPOPU= ' , cpopu(:)
+! 2D aux arrays: canopy data in diffusion
+        aux2d(:,1) = cfch (:)
+        aux2d(:,2) = claie(:)
+        aux2d(:,3) = cfrt(:)
+
+! 3D aux arrays: before canopy correction
+        aux3d(:,:,1) = dkq(:,:)
+        aux3d(:,:,2) = dkt(:,:)
+        aux3d(:,:,3) = dku(:,:)
+!IVAI
+        do k = 1, km1-1
+          do i = 1, im
+
+!TODO: Canopy Inputs
+!           if(rdcanopylai) then
+!             XCANOPYLAI = canopylaixy(i)
+!           else
+!             XCANOPYLAI = 0.0
+!           endif
+!           if(rdcanopyfch) then
+!             XCANOPYFCH = canopyfchxy(i)
+!           else
+!             XCANOPYFCH = 0.0
+!           endif
+!           if(rdcanopyfrt) then
+!             XCANOPYFRT = canopyfrtxy(i)
+!           else
+!             XCANOPYFRT = 0.0
+!           endif
+!           if(rdcanopyclu) then
+!             XCANOPYCLU = canopycluxy(i)
+!           else
+!             XCANOPYCLU = 0.0
+!           endif
+!
+!           FCH = XCANOPYFCH !top of canopy from input file
+
+!IVAI: AQM canopy Inputs
+!           FCH = fch_table(vegtype(i)) !top of canopy from look-up table
+            FCH = cfch(i)               !top of canopy from AQM canopy inputs
+            IF (k .EQ. 1) THEN !use model layer interfaces
+              KCAN = 1
+            ELSE
+              IF (   cfch(i) .GT. zi(i,k)
+     &         .AND. cfch(i) .LE. zi(i,k+1) ) THEN
+                KCAN = 1
+              ELSE
+                KCAN = 0
+              END IF
+            END IF
+
+            IF (KCAN .EQ. 1) THEN !canopy inside model layer
+!           Check for other Contiguous Canopy Grid Cell Conditions
+
+!           Not a contigous canopy cell
+            IF (   claie(i) .LT. 0.1
+     &        .OR. cfch (i) .LT. 0.5
+!IVAI: modified contiguous canopy condition
+!    &        .OR. MAX(0.0, 1.0 - cfrt(i)) .GT. 0.5
+     &        .OR. MAX(0.0, 1.0 - cfrt(i)) .GT. 0.75
+!IVAI
+     &        .OR. cpopu(i) .GT. 10000.0
+     &        .OR. (EXP(-0.5*claie(i)*cclu(i)) .GT. 0.45
+     &                          .AND. cfch(i)  .LT. 18.) ) THEN
+
+
+!TODO: Canopy Inputs
+!                        IF ( XCANOPYLAI .LT. 0.1  !from canopy inputs
+!                        IF ( lai(i) .LT. 0.1  !from LSM
+!     &                   .OR. FCH .LT. 0.5 ) THEN
+!     &                   .OR. MAX(0.0, 1.0 - XCANOPYFRT) .GT. 0.5
+!     &                   .OR. POPU .GT. 10000.0
+!     &                   .OR. EXP(-0.5*XCANOPYLAI*XCANOPYCLU).GT. 0.45
+!     &                      .AND. FCH .LT. 18.0 ) THEN 
+
+              dkt(i,k)= dkt(i,k)
+              dkq(i,k)= dkq(i,k)
+              dku(i,k)= dku(i,k)
+
+            ELSE ! There is a contiguous forest canopy, apply correction over canopy layers
+
+! Output contiguous canopy mask
+              if (kount .EQ. 0 ) aux2d(i,5) = aux2d(i,5) + 1
+
+!Raupauch M. R. A Practical Lagrangian method for relating scalar
+!concentrations to
+! source distributions in vegetation canopies. Q. J. R. Meteor. Soc.
+! (1989), 115, pp 609-632
+              MOL  = zol(i)/zl(i,k)  !Monin-Obukhov Length in layer
+              HOL = FCH/MOL  !local canopy stability parameter (hc/MOL)
+              ZCAN = zi(i,k+1) ! Initialize each model layer top that contains canopy (m)
+                             ! Integrate across total model interface
+              ZFL = ZCAN     ! Set ZFL = ZCAN
+              COUNTCAN = 0   ! Initialize canopy layers
+
+              IF (k .EQ. 1) THEN  !Find bottom in each model layer
+                  BOTCAN = 0.5
+              ELSE
+                  BOTCAN = zi(i,k)
+              END IF
+
+              DO WHILE (ZCAN.GE.BOTCAN)
+                 ! TLCAN = Lagrangian timescale
+                 TLCAN = (FCH/ustar(i)) * (
+     &                   (0.256 * (ZCAN-(0.75*FCH))/FCH ) +
+     &                   (0.492*EXP((-0.256*ZCAN/FCH)/0.492)) )
+                 IF ( HOL .LT. -0.1 )  THEN  !STRONG UNSTABLE
+                  IF ( ZCAN/FCH .GT. 1.25 ) THEN !SIGMACAN = Eulerian vertical velocity variance
+                    SIGMACAN = 1.25*ustar(i)
+                  END IF
+                  IF ( ZCAN/FCH .GE. 0.175  
+     &               .AND. ZCAN/FCH .LE. 1.25 ) THEN
+                      SIGMACAN = ustar(i) * ( 0.75 + 
+     &                         (0.5 * COS((PICAN/1.06818) *
+     &                         (1.25 - (ZCAN/FCH)))) )
+                  END IF
+                  IF ( ZCAN/FCH .LT. 0.175 )  THEN
+                    SIGMACAN = 0.25*ustar(i)
+                  END IF
+                 END IF
+                 IF ( HOL .GE. -0.1  .AND. HOL .LT. 0.1 )   THEN !WEAKLY UNSTABLE to NEUTRAL
+                  IF ( ZCAN/FCH .GT. 1.25 ) THEN
+                    SIGMACAN = 1.0*ustar(i)
+                  END IF
+                  IF ( ZCAN/FCH .GE. 0.175  
+     &               .AND. ZCAN/FCH .LE. 1.25 ) THEN
+                    SIGMACAN = ustar(i) * ( 0.625 + 
+     &                       (0.375* COS((PICAN/1.06818) *
+     &                       (1.25 - (ZCAN/FCH)))) )
+                  END IF
+                  IF ( ZCAN/FCH .LT. 0.175 )  THEN
+                    SIGMACAN = 0.25*ustar(i)
+                  END IF
+                 END IF
+                 IF ( HOL .GE.  0.1  .AND.  HOL .LT. 0.9 )   THEN !STABLE
+                  IF ( ZCAN/FCH .GT. 1.25 ) THEN
+                    SIGMACAN = 0.25*(4.375 - (3.75*HOL))*ustar(i)
+                  END IF
+                  IF ( ZCAN/FCH .GE. 0.175  
+     &                 .AND. ZCAN/FCH .LE. 1.25 ) THEN
+                    RRCAN=4.375-(3.75*HOL)
+                    AACAN=(0.125*RRCAN) + 0.125
+                    BBCAN=(0.125*RRCAN) - 0.125
+                    SIGMACAN = ustar(i) * ( AACAN + 
+     &                             (BBCAN * COS((PICAN/1.06818) *
+     &                             (1.25 - (ZCAN/FCH)))) )
+                  END IF
+                  IF ( ZCAN/FCH .LT. 0.175 )  THEN
+                    SIGMACAN = 0.25*ustar(i)
+                  END IF
+                 END IF
+                 IF ( HOL .GE.  0.9 ) THEN  !VERY STABLE
+                    SIGMACAN = 0.25*ustar(i)
+                 END IF
+                 IF ( ZCAN .EQ. ZFL )  THEN ! Each model layer that includes canopy
+                  EDDYVEST1 = (SIGMACAN*SIGMACAN)*TLCAN
+                 ELSE IF ( ZCAN .LE. FCH )  THEN !in-canopy layers and set arrays
+                  COUNTCAN = COUNTCAN + 1
+                  ZCANX (COUNTCAN)     = ZCAN
+                  EDDYVESTX (COUNTCAN) = (SIGMACAN*SIGMACAN)*TLCAN
+                 END IF
+                 ZCAN = ZCAN-0.5  !step down in-canopy resolution of 0.5m
+              END DO !end loop on canopy layers
+              EDDYVEST_INT = IntegrateTrapezoid((ZCANX(COUNTCAN:1:-1)
+     &                                /FCH),EDDYVESTX(COUNTCAN:1:-1))
+              dkt(i,k)= (dkt(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dkt to resolved eddy diffusivity
+              dkq(i,k)= (dkq(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dkq to resolved eddy diffusivity
+              dku(i,k)= (dku(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dku to resolved eddy diffusivity
+
+!IVAI: Output contiguos canopy correction bottom layer and 3D
+              if ( kount .EQ.  0)
+     &           aux2d(i,4) = 1./EDDYVEST1  * EDDYVEST_INT
+              aux3d(i,k,4) = 1./EDDYVEST1  * EDDYVEST_INT
+!IVAI
+
+            END IF   ! contigous canopy conditions
+
+            END IF   ! (KCAN .EQ. 1) model layer(s) containing canopy
+
+          enddo !i
+
+          kount = kount + 1 !IVAI
+
+        enddo !k
+
+      endif !do_canopy
+
 !> ## Compute TKE.
 !!  - Compute a minimum TKE deduced from background diffusivity for momentum.
 !
@@ -1343,8 +1637,7 @@
             endif
             ptem2 = ptem2 + ptem
 !
-!           tem2 = stress(i)*spd1(i)/zl(i,1)
-            tem2 = stress(i)*ustar(i)*phim(i)/(vk*zl(i,1))
+            tem2 = stress(i)*ustar(i)*phims(i)/(vk*zl(i,1))
             shrp = 0.5 * (tem1 + ptem1 + ptem2 + tem2)
           else
             tem1 = -dkt(i,k-1) * bf(i,k-1)
@@ -1543,6 +1836,7 @@
           tkeh(i,k) = 0.5 * (tke(i,k)+tke(i,k+1))
         enddo
       enddo
+
       do k=1,kps
         do i=1,im
           e_diff(i,k) = tke(i,k) - tke(i,k+1)
@@ -1672,8 +1966,7 @@ c
           endif
           if((pcnvflg(i) .or. scuflg(i)) .and.
      &       (k >= kbx .and. k <= kmx)) then
-            dz = zi(i,k+1) - zi(i,k)
-            tem = f1(i,k) * dz
+            tem = f1(i,k) * del(i,k) * gravi
             if(f1(i,k) < 0.) tsumn(i) = tsumn(i) + tem
             if(f1(i,k) > 0.) tsump(i) = tsump(i) + tem
           endif
@@ -1728,8 +2021,7 @@ c
       enddo
       do k = 1,km
         do i = 1,im
-          dz = zi(i,k+1) - zi(i,k)
-          tem = f1(i,k) * dz
+          tem = f1(i,k) * del(i,k) * gravi
           if(f1(i,k) < 0.) tsumn(i) = tsumn(i) + tem
           if(f1(i,k) > 0.) tsump(i) = tsump(i) + tem
         enddo
@@ -1921,7 +2213,7 @@ c
           endif
           if((pcnvflg(i) .or. scuflg(i)) .and.
      &       (k >= kbx .and. k <= kmx)) then
-            tem = f2(i,k) * del(i,k) / grav
+            tem = f2(i,k) * del(i,k) * gravi
             if(f2(i,k) < 0.) tsumn(i) = tsumn(i) + tem
             if(f2(i,k) > 0.) tsump(i) = tsump(i) + tem
           endif
@@ -1977,7 +2269,7 @@ c
       enddo
       do k = 1,km
         do i = 1,im
-          tem = f2(i,k) * del(i,k) / grav
+          tem = f2(i,k) * del(i,k) * gravi
           if(f2(i,k) < 0.) tsumn(i) = tsumn(i) + tem
           if(f2(i,k) > 0.) tsump(i) = tsump(i) + tem
         enddo
@@ -2106,7 +2398,7 @@ c
               endif
               if((pcnvflg(i) .or. scuflg(i)) .and.
      &           (k >= kbx .and. k <= kmx)) then
-                tem = f2(i,k+is) * del(i,k) / grav
+                tem = f2(i,k+is) * del(i,k) * gravi
                 if(f2(i,k+is) < 0.) tsumn(i) = tsumn(i) + tem
                 if(f2(i,k+is) > 0.) tsump(i) = tsump(i) + tem
               endif
@@ -2162,7 +2454,7 @@ c
           enddo
           do k = 1,km
             do i = 1,im
-              tem = f2(i,k+is) * del(i,k) / grav
+              tem = f2(i,k+is) * del(i,k) * gravi
               if(f2(i,k+is) < 0.) tsumn(i) = tsumn(i) + tem
               if(f2(i,k+is) > 0.) tsump(i) = tsump(i) + tem
             enddo
@@ -2205,15 +2497,7 @@ c
 !           dqsfc(i)   = dqsfc(i)+conq*del(i,k)*qtend
          enddo
       enddo
-
-      if(progsigma)then
-         do  k = 1,km
-            do i = 1,im
-               tmf(i,k)=(f2(i,k)-q1(i,k,1))*rdt
-            enddo
-         enddo
-      endif
-
+!
       do i = 1,im
         dtsfc(i) = rho_a(i) * cp * heat(i)
         dqsfc(i) = rho_a(i) * hvap * evap(i)

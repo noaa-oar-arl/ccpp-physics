@@ -66,6 +66,8 @@ contains
                index_of_y_wind,index_of_process_scnv,index_of_process_dcnv,     &
                fhour,fh_dfi_radar,ix_dfi_radar,num_dfi_radar,cap_suppress,      &
                dfi_radar_max_intervals,ldiag3d,qci_conv,do_cap_suppress,        &
+               maxupmf,maxMF,do_mynnedmf,ichoice_in,ichoicem_in,ichoice_s_in,   &
+               spp_cu_deep,spp_wts_cu_deep,                                     &
                errmsg,errflg)
 !-------------------------------------------------------------
       implicit none
@@ -74,12 +76,15 @@ contains
       integer, parameter :: maxens2=1
       integer, parameter :: maxens3=16
       integer, parameter :: ensdim=16
-      integer, parameter :: imid_gf=1    ! testgf2 turn on middle gf conv.
+      integer            :: imid_gf=1    ! gf congest conv.
       integer, parameter :: ideep=1
-      integer, parameter :: ichoice=0	! 0 2 5 13 8
-     !integer, parameter :: ichoicem=5	! 0 2 5 13
-      integer, parameter :: ichoicem=13	! 0 2 5 13
-      integer, parameter :: ichoice_s=3	! 0 1 2 3
+      integer            :: ichoice=0    ! 0 2 5 13 8
+      integer            :: ichoicem=13  ! 0 2 5 13
+      integer            :: ichoice_s=3  ! 0 1 2 3
+      integer, intent(in) :: spp_cu_deep ! flag for using SPP perturbations
+      real(kind_phys), dimension(:,:), intent(in) ::        &
+     &                    spp_wts_cu_deep
+      real(kind=kind_phys) :: spp_wts_cu_deep_tmp
 
       logical, intent(in) :: do_cap_suppress
       real(kind=kind_phys), parameter :: aodc0=0.14
@@ -91,7 +96,8 @@ contains
 !-------------------------------------------------------------
    integer      :: its,ite, jts,jte, kts,kte
    integer, intent(in   ) :: im,km,ntracer
-   logical, intent(in   ) :: flag_init, flag_restart
+   integer, intent(in   ) :: ichoice_in,ichoicem_in,ichoice_s_in
+   logical, intent(in   ) :: flag_init, flag_restart, do_mynnedmf
    logical, intent(in   ) :: flag_for_scnv_generic_tend,flag_for_dcnv_generic_tend
    real (kind=kind_phys), intent(in) :: g,cp,xlv,r_v
    logical, intent(in   ) :: ldiag3d
@@ -121,7 +127,7 @@ contains
 
    integer, dimension (:), intent(out) :: hbot,htop,kcnv
    integer, dimension (:), intent(in)  :: xland
-   real(kind=kind_phys),    dimension (:), intent(in) :: pbl
+   real(kind=kind_phys),    dimension (:), intent(in) :: pbl,maxMF
 !$acc declare copyout(hbot,htop,kcnv)
 !$acc declare copyin(xland,pbl)
    integer, dimension (im) :: tropics
@@ -129,7 +135,7 @@ contains
 !  ruc variable
    real(kind=kind_phys), dimension (:),   intent(in)  :: hfx2,qfx2,psuri
    real(kind=kind_phys), dimension (:,:), intent(out) :: ud_mf,dd_mf,dt_mf
-   real(kind=kind_phys), dimension (:),   intent(out) :: raincv,cld1d
+   real(kind=kind_phys), dimension (:),   intent(out) :: raincv,cld1d,maxupmf
    real(kind=kind_phys), dimension (:,:), intent(in)  :: t2di,p2di
 !$acc declare copyin(hfx2,qfx2,psuri,t2di,p2di)
 !$acc declare copyout(ud_mf,dd_mf,dt_mf,raincv,cld1d)
@@ -228,7 +234,7 @@ contains
 !  gf needs them in w/m2. define hfx and qfx after simple unit conversion
    real(kind=kind_phys), dimension (im)  :: hfx,qfx
 !$acc declare create(hfx,qfx)
-   real(kind=kind_phys) tem,tem1,tf,tcr,tcrf
+   real(kind=kind_phys) tem,tem1,tf,tcr,tcrf,psum
    real(kind=kind_phys) :: cliw_shal,clcw_shal,tem_shal, cliw_both, weight_sum
    real(kind=kind_phys) :: cliw_deep,clcw_deep,tem_deep, clcw_both
    integer :: cliw_deep_idx, clcw_deep_idx, cliw_shal_idx, clcw_shal_idx
@@ -246,6 +252,9 @@ contains
      errmsg = ''
      errflg = 0
 
+     ichoice   = ichoice_in
+     ichoicem  = ichoicem_in
+     ichoice_s = ichoice_s_in
      if(do_cap_suppress) then
 !$acc serial
        do itime=1,num_dfi_radar
@@ -309,9 +318,18 @@ contains
 ! these should be coming in from outside
 !
 !    cactiv(:)      = 0
-     rand_mom(:)    = 0.
-     rand_vmas(:)   = 0.
-     rand_clos(:,:) = 0.
+     if (spp_cu_deep == 0) then
+       rand_mom(:)    = 0.
+       rand_vmas(:)   = 0.
+       rand_clos(:,:) = 0.
+     else 
+       do i=1,im
+         spp_wts_cu_deep_tmp=min(max(-1.0_kind_phys, spp_wts_cu_deep(i,1)),1.0_kind_phys)
+         rand_mom(i)    = spp_wts_cu_deep_tmp 
+         rand_vmas(i)   = spp_wts_cu_deep_tmp 
+         rand_clos(i,:) = spp_wts_cu_deep_tmp
+       end do
+     end if
 !$acc end kernels
 !
      its=1
@@ -337,10 +355,7 @@ contains
      edtd(:)=0.
      zdd(:,:)=0.
      flux_tun(:)=5.
-! 10/11/2016 dx and tscl_kf are replaced with input dx(i), is dlength.
 ! dx for scale awareness
-!    dx=40075000./float(lonf)
-!    tscl_kf=dx/25000.
 !$acc end kernels
 
      if (imfshalcnv == 3) then
@@ -537,6 +552,9 @@ contains
      subm(:,:)=0.
      dhdt(:,:)=0.
 
+     frhm(:)=0.
+     frhd(:)=0.
+
      do k=kts,ktf
       do i=its,itf
         p2d(i,k)=0.01*p2di(i,k)
@@ -601,17 +619,33 @@ contains
        endif
       enddo
      enddo
+     do i = its,itf
+       psum=0.
+       do k=kts,ktf-3
+        if (clcw(i,k) .gt. -999.0 .and. clcw(i,k+1) .gt. -999.0 )then
+           dp=(p2d(i,k)-p2d(i,k+1))
+           psum=psum+dp
+           clwtot = cliw(i,k) + clcw(i,k)
+           if(clwtot.lt.1.e-32)clwtot=0.
+           forcing(i,7)=forcing(i,7)+clwtot*dp
+        endif
+       enddo
+       if(psum.gt.0)forcing(i,7)=forcing(i,7)/psum
+       forcing2(i,7)=forcing(i,7)
+     enddo
      do k=kts,ktf-1
       do i = its,itf
         omeg(i,k)= w(i,k) !-g*rhoi(i,k)*w(i,k)
-!       dq=(q2d(i,k+1)-q2d(i,k))
-!       mconv(i)=mconv(i)+omeg(i,k)*dq/g
       enddo
      enddo
      do i = its,itf
       if(mconv(i).lt.0.)mconv(i)=0.
+      if((dx(i)<6500.).and.do_mynnedmf.and.(maxMF(i).gt.0.))ierr(i)=555
      enddo
 !$acc end kernels
+     if (dx(its)<6500.) then
+       imid_gf=0
+     endif
 !
 !---- call cumulus parameterization
 !
@@ -640,7 +674,13 @@ contains
 
 !$acc kernels
           do i=its,itf
-           if(xmbs(i).gt.0.)cutens(i)=1.
+           if(xmbs(i).gt.0.)then
+            cutens(i)=1.
+            if (dx(i)<6500.) then
+             ierrm(i)=555
+             ierr (i)=555
+            endif
+           endif
           enddo
 !$acc end kernels
 !> - Call neg_check() for GF shallow convection
@@ -654,8 +694,8 @@ contains
       if(imid_gf == 1)then
        call cu_gf_deep_run(        &
                itf,ktf,its,ite, kts,kte  &
-              ,dicycle_m       &
-              ,ichoicem       &
+              ,dicycle_m     &
+              ,ichoicem      &
               ,ipr           &
               ,ccn_m         &
               ,ccnclean      &
@@ -664,25 +704,23 @@ contains
               ,kpbli         &
               ,dhdt          &
               ,xlandi        &
-
               ,zo            &
-              ,forcing2      &
+              ,forcing       &
               ,t2d           &
               ,q2d           &
               ,ter11         &
               ,tshall        &
               ,qshall        &
-              ,p2d          &
+              ,p2d           &
               ,psur          &
               ,us            &
               ,vs            &
               ,rhoi          &
               ,hfx           &
               ,qfx           &
-              ,dx            & !hj dx(im)
+              ,dx            &
               ,mconv         &
               ,omeg          &
-
               ,cactiv_m      &
               ,cnvwtm        &
               ,zum           &
@@ -709,7 +747,7 @@ contains
               ,rand_mom      & ! for stochastics mom, if temporal and spatial patterns exist
               ,rand_vmas     & ! for stochastics vertmass, if temporal and spatial patterns exist
               ,rand_clos     & ! for stochastics closures, if temporal and spatial patterns exist
-              ,0             & ! flag to what you want perturbed
+              ,spp_cu_deep   & ! flag to what you want perturbed
                                ! 1 = momentum transport
                                ! 2 = normalized vertical mass flux profile
                                ! 3 = closures
@@ -748,7 +786,7 @@ contains
               ,xlandi        &
 
               ,zo            &
-              ,forcing       &
+              ,forcing2      &
               ,t2d           &
               ,q2d           &
               ,ter11         &
@@ -761,7 +799,7 @@ contains
               ,rhoi          &
               ,hfx           &
               ,qfx           &
-              ,dx            & !hj replace dx(im)
+              ,dx            &
               ,mconv         &
               ,omeg          &
 
@@ -791,7 +829,7 @@ contains
               ,rand_mom      & ! for stochastics mom, if temporal and spatial patterns exist
               ,rand_vmas     & ! for stochastics vertmass, if temporal and spatial patterns exist
               ,rand_clos     & ! for stochastics closures, if temporal and spatial patterns exist
-              ,0             & ! flag to what you want perturbed
+              ,spp_cu_deep   & ! flag to what you want perturbed
                                ! 1 = momentum transport
                                ! 2 = normalized vertical mass flux profile
                                ! 3 = closures
@@ -815,25 +853,6 @@ contains
                       outqc,pret,its,ite,kts,kte,itf,ktf,ktop)
 !
       endif
-!            do i=its,itf
-!              kcnv(i)=0
-!              if(pret(i).gt.0.)then
-!                 cuten(i)=1.
-!                 kcnv(i)= 1 !jmin(i)
-!              else
-!                 kbcon(i)=0
-!                 ktop(i)=0
-!                 cuten(i)=0.
-!              endif   ! pret > 0
-!              if(pretm(i).gt.0.)then
-!                 kcnv(i)= 1 !jmin(i)
-!                 cutenm(i)=1.
-!              else
-!                 kbconm(i)=0
-!                 ktopm(i)=0
-!                 cutenm(i)=0.
-!              endif   ! pret > 0
-!            enddo
 !$acc kernels
             do i=its,itf
               kcnv(i)=0
@@ -880,6 +899,7 @@ contains
             endif
 
             dtime_max=dt
+            forcing2(i,3)=0.
             do k=kts,kstop
                cnvc(i,k) = 0.04 * log(1. + 675. * zu(i,k) * xmb(i)) +   &
                            0.04 * log(1. + 675. * zum(i,k) * xmbm(i)) + &
@@ -897,8 +917,8 @@ contains
 
                gdc(i,k,1)= max(0.,tun_rad_shall(i)*cupclws(i,k)*cutens(i))      ! my mod
                !gdc2(i,k,1)=max(0.,tun_rad_deep(i)*(cupclwm(i,k)*cutenm(i)+cupclw(i,k)*cuten(i)))
-               !gdc2(i,k,1)=max(0.,tun_rad_mid(i)*cupclwm(i,k)*cutenm(i)+tun_rad_deep(i)*cupclw(i,k)*cuten(i)+tun_rad_shall(i)*cupclws(i,k)*cutens(i))
-               gdc2(i,k,1) = min(0.1, max(0.01, tun_rad_mid(i)*frhm(i)))*cupclwm(i,k)*cutenm(i) + min(0.1, max(0.01, tun_rad_deep(i)*(frhd(i))))*cupclw(i,k)*cuten(i) + tun_rad_shall(i)*cupclws(i,k)*cutens(i)
+               gdc2(i,k,1)=max(0.,tun_rad_mid(i)*cupclwm(i,k)*cutenm(i)+frhd(i)*cupclw(i,k)*cuten(i)+tun_rad_shall(i)*cupclws(i,k)*cutens(i))
+               !gdc2(i,k,1) = min(0.1, max(0.01, tun_rad_mid(i)*frhm(i)))*cupclwm(i,k)*cutenm(i) + min(0.1, max(0.01, tun_rad_deep(i)*(frhd(i))))*cupclw(i,k)*cuten(i) + tun_rad_shall(i)*cupclws(i,k)*cutens(i)
                qci_conv(i,k)=gdc2(i,k,1)
                gdc(i,k,2)=(outt(i,k))*86400.
                gdc(i,k,3)=(outtm(i,k))*86400.
@@ -907,38 +927,6 @@ contains
               !gdc(i,k,8)=(outq(i,k))*86400.*xlv/cp
                gdc(i,k,8)=(outqm(i,k)+outqs(i,k)+outq(i,k))*86400.*xlv/cp
                gdc(i,k,9)=gdc(i,k,2)+gdc(i,k,3)+gdc(i,k,4)
-!
-!> - Calculate subsidence effect on clw
-!
-!              dsubclw=0.
-!              dsubclwm=0.
-!              dsubclws=0.
-!              dp=100.*(p2d(i,k)-p2d(i,k+1))
-!              if (clcw(i,k) .gt. -999.0 .and. clcw(i,k+1) .gt. -999.0 )then
-!                 clwtot = cliw(i,k) + clcw(i,k)
-!                 clwtot1= cliw(i,k+1) + clcw(i,k+1)
-!                 dsubclw=((-edt(i)*zd(i,k+1)+zu(i,k+1))*clwtot1   &
-!                      -(-edt(i)*zd(i,k)  +zu(i,k))  *clwtot  )*g/dp
-!                 dsubclwm=((-edtm(i)*zdm(i,k+1)+zum(i,k+1))*clwtot1   &
-!                      -(-edtm(i)*zdm(i,k)  +zum(i,k))  *clwtot  )*g/dp
-!                 dsubclws=(zus(i,k+1)*clwtot1-zus(i,k)*clwtot)*g/dp
-!                 dsubclw=dsubclw+(zu(i,k+1)*clwtot1-zu(i,k)*clwtot)*g/dp
-!                 dsubclwm=dsubclwm+(zum(i,k+1)*clwtot1-zum(i,k)*clwtot)*g/dp
-!                 dsubclws=dsubclws+(zus(i,k+1)*clwtot1-zus(i,k)*clwtot)*g/dp
-!              endif
-!              tem  = dt*(outqcs(i,k)*cutens(i)+outqc(i,k)*cuten(i)       &
-!                    +outqcm(i,k)*cutenm(i)                           &
-!                     +dsubclw*xmb(i)+dsubclws*xmbs(i)+dsubclwm*xmbm(i) &
-!                    )
-!              tem1 = max(0.0, min(1.0, (tcr-t(i,k))*tcrf))
-!              if (clcw(i,k) .gt. -999.0) then
-!               cliw(i,k) = max(0.,cliw(i,k) + tem * tem1)            ! ice
-!               clcw(i,k) = max(0.,clcw(i,k) + tem *(1.0-tem1))       ! water
-!              else
-!                cliw(i,k) = max(0.,cliw(i,k) + tem)
-!              endif
-!
-!            enddo
 
 !> - FCT treats subsidence effect to cloud ice/water (begin)
                dp=100.*(p2d(i,k)-p2d(i,k+1))
@@ -954,6 +942,7 @@ contains
                              -(xmbm(i)*(zdm(i,k)-edtm(i)*zdm(i,k)))   &
                              -(xmbs(i)*zus(i,k))
                   trcflx_in1(k)=massflx(k)*.5*(clwtot+clwtot1)
+                  forcing2(i,3)=forcing2(i,3)+clwtot
                endif
              enddo
 
@@ -991,6 +980,12 @@ contains
             gdc(i,13,10)=hfx(i)
             gdc(i,15,10)=qfx(i)
             gdc(i,16,10)=pret(i)*3600.
+
+            maxupmf(i)=0.
+            if(forcing2(i,6).gt.0.)then
+              maxupmf(i)=maxval(xmb(i)*zu(i,kts:ktf)/forcing2(i,6))
+            endif
+
             if(ktop(i).gt.2 .and.pret(i).gt.0.)dt_mf(i,ktop(i)-1)=ud_mf(i,ktop(i))
             endif
             enddo

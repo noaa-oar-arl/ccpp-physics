@@ -1,3 +1,11 @@
+      module progsigma
+
+        implicit none
+
+        public progsigma_calc
+
+      contains
+
 !>\file progsigma_calc.f90
 !! This file contains the subroutine that calculates the prognostic
 !! updraft area fraction that is used for closure computations in 
@@ -11,10 +19,10 @@
 !! This subroutine computes a prognostic updraft area fracftion
 !! used in the closure computations in the samfshalcnv. scheme
 !!\section gen_progsigma progsigma_calc General Algorithm 
-      subroutine progsigma_calc (im,km,flag_init,flag_restart,           &
-           flag_shallow,del,tmf,qmicro,dbyo1,zdqca,omega_u,zeta,hvap,    &
-           delt,prevsq,q,kbcon1,ktcon,cnvflg,sigmain,sigmaout,           &
-           sigmab,errmsg,errflg)
+      subroutine progsigma_calc (im,km,flag_init,flag_restart,flag_shallow,&
+           flag_mid,del,tmf,qmicro,dbyo1,zdqca,omega_u,zeta,hvap,          &
+           delt,qadv,kbcon1,ktcon,cnvflg,betascu,betamcu,betadcu,          &
+           sigmind,sigminm,sigmins,sigmain,sigmaout,sigmab)
 !                                                           
 !                                                                                                                                             
       use machine,  only : kind_phys
@@ -24,37 +32,35 @@
 
 !     intent in
       integer, intent(in)  :: im,km,kbcon1(im),ktcon(im)
-      real(kind=kind_phys), intent(in)  :: hvap,delt
-      real(kind=kind_phys), intent(in)  :: prevsq(im,km), q(im,km),del(im,km),    &
+      real(kind=kind_phys), intent(in)  :: hvap,delt,betascu,betamcu,betadcu, &
+                                           sigmind,sigminm,sigmins
+      real(kind=kind_phys), intent(in)  :: qadv(im,km),del(im,km),    &
            qmicro(im,km),tmf(im,km),dbyo1(im,km),zdqca(im,km),           &
            omega_u(im,km),zeta(im,km)
-      logical, intent(in)  :: flag_init,flag_restart,cnvflg(im),flag_shallow
+      logical, intent(in)  :: flag_init,flag_restart,cnvflg(im),flag_shallow,flag_mid
       real(kind=kind_phys), intent(in) :: sigmain(im,km)
 
 !     intent out
       real(kind=kind_phys), intent(out) :: sigmaout(im,km)
       real(kind=kind_phys), intent(out) :: sigmab(im)
-      character(len=*),     intent(out) :: errmsg
-      integer,              intent(out) :: errflg
+
 
 !     Local variables
       integer              :: i,k,km1
       real(kind=kind_phys) :: termA(im),termB(im),termC(im),termD(im)
       real(kind=kind_phys) :: mcons(im),fdqa(im),form(im,km),              &
-           qadv(im,km),dp(im,km),inbu(im,km)                         
+           dp(im,km),inbu(im,km)                         
                           
 
       real(kind=kind_phys) :: gcvalmx,epsilon,ZZ,cvg,mcon,buy2,   &
                           fdqb,dtdyn,dxlim,rmulacvg,tem,     &
-                          DEN,betascu,betadcu,dp1,invdelt
+                          DEN,dp1,invdelt
 
      !Parameters
       gcvalmx = 0.1
       rmulacvg=10.
       epsilon=1.E-11
       km1=km-1
-      betadcu = 2.0
-      betascu = 8.0
       invdelt = 1./delt
 
      !Initialization 2D
@@ -77,21 +83,6 @@
          mcons(i)=0.
       enddo
 
-      !Initial computations, dynamic q-tendency
-      if(flag_init .and. .not.flag_restart)then
-         do k = 1,km
-            do i = 1,im
-               qadv(i,k)=0.
-            enddo
-         enddo
-      else
-         do k = 1,km
-            do i = 1,im
-               qadv(i,k)=(q(i,k) - prevsq(i,k))*invdelt
-            enddo
-         enddo
-      endif
-     
       do k = 2,km1
           do i = 1,im
              if(cnvflg(i))then
@@ -133,7 +124,7 @@
                 mcon = (hvap*(qadv(i,k)+tmf(i,k)+qmicro(i,k))*dp(i,k))
                 buy2 = termD(i)+mcon+mcons(i)
 !               Do the integral over buoyant layers with positive mcon acc from surface
-                if(k > kbcon1(i) .and. k < ktcon(i) .and. buy2 > 0.)then
+                if(dbyo1(i,k)>0 .and. buy2 > 0.)then
                    inbu(i,k)=1.
                 endif
                 inbu(i,k-1)=MAX(inbu(i,k-1),inbu(i,k))
@@ -214,16 +205,28 @@
          do i= 1, im
             if(cnvflg(i)) then
                sigmab(i)=sigmab(i)/betascu
-               sigmab(i)=MAX(0.03,sigmab(i))
+               sigmab(i)=MAX(sigmins,sigmab(i))
+            endif
+         enddo
+      elseif(flag_mid)then
+         do i= 1, im
+            if(cnvflg(i)) then
+               sigmab(i)=sigmab(i)/betamcu
+               sigmab(i)=MAX(sigminm,sigmab(i))
             endif
          enddo
       else
          do i= 1, im
             if(cnvflg(i)) then
                sigmab(i)=sigmab(i)/betadcu
-               sigmab(i)=MAX(0.01,sigmab(i))
+               sigmab(i)=MAX(sigmind,sigmab(i))
             endif
          enddo
       endif
+      do i= 1, im
+        sigmab(i) = MIN(0.95,sigmab(i))
+      enddo
 
      end subroutine progsigma_calc
+
+end module progsigma
