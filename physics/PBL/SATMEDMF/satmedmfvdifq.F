@@ -218,6 +218,7 @@
       real(kind=kind_phys) zi(im,km+1),  zl(im,km),   zm(im,km),
      &                     xkzo(im,km-1),xkzmo(im,km-1),
      &                     xkzm_hx(im),  xkzm_mx(im), tkmnz(im,km-1),
+     &                     xkzm_sx(im),                               !IVAI
      &                     rdzt(im,km-1),rlmnz(im,km),
      &                     al(im,km-1),  ad(im,km),   au(im,km-1),
      &                     f1(im,km),    f2(im,km*(ntrac-1))
@@ -326,11 +327,15 @@
      &                     ZZ_INT,
      &                     EDDYVEST1, EDDYVEST_INT
 
+      real(kind=kind_phys) xkzmcan_h, xkzmcan_m, xkzmcan_s
+
       ! in canopy eddy diffusivity [ m**2/s ]
       real(kind=kind_phys), allocatable  :: EDDYVESTX ( : )
       ! in canopy layer [m]
       real(kind=kind_phys), allocatable  :: ZCANX     ( : )
       real(kind=kind_phys), allocatable  :: ZOOOX     ( : )
+      ! minimum background diffusivities over canopy
+      parameter(xkzmcan_h=0.1d0,xkzmcan_m=0.1d0,xkzmcan_s=0.1d0)
       ! Declare local maximum canopy layers
       integer, parameter :: MAXCAN = 1000
       integer, parameter :: mvt   = 30 ! use 30 instead of 27
@@ -505,6 +510,8 @@
         kx1(i) = 1
         tx1(i) = 1.0 / prsi(i,1)
         tx2(i) = tx1(i)
+
+! Apply default minimum background diffusivities
         if(gdx(i) >= xkgdx) then
           xkzm_hx(i) = xkzm_h
           xkzm_mx(i) = xkzm_m
@@ -513,7 +520,46 @@
           xkzm_hx(i) = xkzm_h * tem
           xkzm_mx(i) = xkzm_m * tem
         endif
+
+!IVAI
+        xkzm_sx(i) = xkzm_s !IVAI
+!IVAI
       enddo
+
+      if (do_canopy .and. cplaqm) then
+      do i=1,im
+
+! Not a contiguous canopy cell
+      IF (   claie(i) .LT. 0.1                              ! .not.FRT_MASK
+     &    .OR. cfch (i) .LT. 0.5
+     &    .OR. MAX(0.0, 1.0 - cfrt(i)) .GT. 0.75
+     &    .OR. cpopu(i) .GT. 10000.0
+     &    .OR. (EXP(-0.5*claie(i)*cclu(i)) .GT. 0.45
+     &    .AND.                   cfch(i)  .LT. 18.) ) THEN ! .NOT.FRT_MASK
+
+! Apply default minimum background diffusivities (above)
+
+! There is a contiguous forest canopy, apply reduced minimum background diffusivities
+      ELSE  ! FRT_MASK
+
+! Apply reduced to 0.1 minimum background diffusivities over canopy
+        if(gdx(i) >= xkgdx) then
+          xkzm_hx(i) = xkzmcan_h
+          xkzm_mx(i) = xkzmcan_m
+        else
+          tem  = gdx(i) / xkgdx
+          xkzm_hx(i) = xkzmcan_h * tem
+          xkzm_mx(i) = xkzmcan_m * tem
+        endif
+
+        xkzm_sx(i) = xkzmcan_s
+
+      ENDIF ! FRT_MASK
+
+      enddo ! i=1,im
+
+      end if ! do_canopy
+
       do k = 1,km1
         do i=1,im
           xkzo(i,k)  = 0.0
@@ -532,7 +578,9 @@
             xkzo(i,k) = xkzm_hx(i) * tem2
 !                               vertical background diffusivity for
 !                               momentum
-            if (ptem >= xkzm_s) then
+! IVAI
+            if (ptem >= xkzm_sx(i)) then ! IVAI
+! IVAI
               xkzmo(i,k) = xkzm_mx(i)
               kx1(i)     = k + 1
             else
