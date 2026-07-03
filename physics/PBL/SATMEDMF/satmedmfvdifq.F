@@ -321,6 +321,7 @@
 !PCC_CANOPY------------------------------------
       integer COUNTCAN,KCAN
       integer kount 
+      logical, parameter :: do_canopy_met = .false. ! integrated canopy met effect
       real(kind=kind_phys) FCH,       MOL,   HOL, TLCAN,
      &                     SIGMACAN,  RRCAN, BBCAN,
      &                     AACAN,     ZCAN,  ZFL, BOTCAN,
@@ -377,7 +378,7 @@
       parameter(elmhfac=1.5,elmhmx=1000.,ckh=0.4)
 
 !PCC_CANOPY------------------------------------
-      if (do_canopy) then
+      if (do_canopy .and. do_canopy_met) then
         if(.not.allocated(EDDYVESTX))
      &    allocate( EDDYVESTX    ( MAXCAN ) )
         if(.not.allocated(ZCANX))
@@ -526,7 +527,7 @@
 !IVAI
       enddo
 
-      if (do_canopy .and. cplaqm) then
+      if (do_canopy .and. do_canopy_met .and. cplaqm) then
       do i=1,im
 
 ! Not a contiguous canopy cell
@@ -558,7 +559,7 @@
 
       enddo ! i=1,im
 
-      end if ! do_canopy
+      end if ! do_canopy .and. do_canopy_met
 
       do k = 1,km1
         do i=1,im
@@ -1753,7 +1754,7 @@
       endif !sa3dtke
 
 !PCC_CANOPY------------------------------------
-      if (do_canopy .and. cplaqm) then
+      if (do_canopy .and. do_canopy_met .and. cplaqm) then
 
         do k = 1, km1-1
 
@@ -1895,9 +1896,10 @@
               END IF
 
 ! Comment out to turn OFF the integrated canopy effect
-!Apr17        dkt(i,k)= (dkt(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dkt to resolved eddy diffusivity
-!Apr17        dkq(i,k)= (dkq(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dkq to resolved eddy diffusivity
-!Apr17        dku(i,k)= (dku(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dku to resolved eddy diffusivity
+             
+              dkt(i,k)= (dkt(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dkt to resolved eddy diffusivity
+              dkq(i,k)= (dkq(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dkq to resolved eddy diffusivity
+              dku(i,k)= (dku(i,k)/EDDYVEST1) * EDDYVEST_INT !Scale dku to resolved eddy diffusivity
 
             END IF ! (COUNTCAN > 0)
 
@@ -1911,7 +1913,7 @@
 
         enddo !k
 
-      endif !do_canopy .and. cplaqm
+      endif !do_canopy and. do_canopy_met .and. cplaqm
 
 !> ## Compute TKE.
 !!  - Compute a minimum TKE deduced from background diffusivity for momentum.
@@ -3121,7 +3123,7 @@ c
       endif  !sa3dtke
 !
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-      if (do_canopy) then
+      if (do_canopy .and. do_canopy_met) then
         if(allocated(EDDYVESTX)) deallocate(EDDYVESTX)
         if(allocated(ZCANX)) deallocate(ZCANX)
       endif
